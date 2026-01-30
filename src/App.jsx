@@ -157,10 +157,21 @@ function CreateBoard({ onCreated }) {
 function BoardEditor({ boardId, onChanged }) {
   const [board, setBoard] = useState(null);
   const [cards, setCards] = useState([]);
+  const [categories, setCategories] = useState([]);
 
   const load = async () => {
-    const { data: b } = await supabase.from("boards").select("*").eq("id", boardId).single();
+    const { data: b, error: be } = await supabase.from("boards").select("*").eq("id", boardId).single();
+    if (be) console.error(be);
     setBoard(b || null);
+
+    const { data: cat, error: catErr } = await supabase
+      .from("categories")
+      .select("*")
+      .eq("board_id", boardId)
+      .order("order_index", { ascending: true });
+
+    if (catErr) console.error(catErr);
+    setCategories(cat ?? []);
 
     const { data: c, error: ce } = await supabase
       .from("cards")
@@ -187,6 +198,35 @@ function BoardEditor({ boardId, onChanged }) {
     await load();
   };
 
+  const createCategory = async (title) => {
+    const name = (title || "").trim();
+    if (!name) return;
+
+    const { error } = await supabase.from("categories").insert({
+      board_id: boardId,
+      title: name,
+      order_index: categories.length,
+    });
+
+    if (error) alert(error.message);
+    await load();
+  };
+
+  const deleteCategory = async (catId) => {
+    // удаляем категорию, карточки останутся с category_id = null (on delete set null)
+    const { error } = await supabase.from("categories").delete().eq("id", catId);
+    if (error) alert(error.message);
+    await load();
+  };
+
+  const setBackgroundUrl = async (url) => {
+    const clean = (url || "").trim() || null;
+    const { error } = await supabase.from("boards").update({ background_url: clean }).eq("id", boardId);
+    if (error) alert(error.message);
+    await load();
+    onChanged?.();
+  };
+
   if (!board) return <div className="muted">Loading…</div>;
 
   return (
@@ -205,12 +245,28 @@ function BoardEditor({ boardId, onChanged }) {
         </div>
       </div>
 
-      <CreateCard boardId={boardId} nextIndex={cards.length} onCreated={load} />
+      {/* Background URL (опционально, но уже работает в public) */}
+      <BackgroundUrlEditor value={board.background_url || ""} onSave={setBackgroundUrl} />
+
+      {/* Categories */}
+      <CategoriesEditor
+        categories={categories}
+        onCreate={createCategory}
+        onDelete={deleteCategory}
+      />
+
+      {/* Create card with category dropdown */}
+      <CreateCard
+        boardId={boardId}
+        nextIndex={cards.length}
+        categories={categories}
+        onCreated={load}
+      />
 
       <div style={{ marginTop: 14 }} className="grid">
         {cards.map((c) => (
           <div key={c.id} className="card" style={{ cursor: "default" }}>
-            {c.image_url ? <img src={c.image_url} alt="" /> : <div style={{ height: 130 }} />}
+            {c.image_url ? <img src={c.image_url} alt="" /> : <div style={{ height: 210 }} />}
             <div className="pad">
               <div className="title">{c.title}</div>
               {c.description ? <div className="desc">{c.description}</div> : null}
@@ -231,7 +287,66 @@ function BoardEditor({ boardId, onChanged }) {
   );
 }
 
-function CreateCard({ boardId, nextIndex, onCreated }) {
+function CategoriesEditor({ categories, onCreate, onDelete }) {
+  const [title, setTitle] = useState("");
+
+  return (
+    <div style={{ border: "1px solid #1f2a3a", borderRadius: 14, padding: 12, background: "#0f1726", marginTop: 12 }}>
+      <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
+        <span className="badge">Categories</span>
+        <span className="muted">Used as tabs on public board</span>
+      </div>
+
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input
+          className="input"
+          placeholder="New category title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        <button className="btn" onClick={() => { onCreate(title); setTitle(""); }}>
+          Add category
+        </button>
+      </div>
+
+      <div className="row" style={{ gap: 8 }}>
+        {categories.map((c) => (
+          <span key={c.id} className="badge" style={{ gap: 10 }}>
+            {c.title}
+            <button className="btn" style={{ padding: "6px 10px" }} onClick={() => onDelete(c.id)}>
+              Delete
+            </button>
+          </span>
+        ))}
+      </div>
+
+      {categories.length === 0 ? <div className="muted" style={{ marginTop: 10 }}>No categories yet.</div> : null}
+    </div>
+  );
+}
+
+function BackgroundUrlEditor({ value, onSave }) {
+  const [v, setV] = useState(value);
+
+  useEffect(() => setV(value), [value]);
+
+  return (
+    <div style={{ border: "1px solid #1f2a3a", borderRadius: 14, padding: 12, background: "#0f1726", marginTop: 12 }}>
+      <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
+        <span className="badge">Background</span>
+        <span className="muted">Paste image URL (optional)</span>
+      </div>
+      <div className="row">
+        <input className="input" placeholder="https://.../background.png" value={v} onChange={(e) => setV(e.target.value)} />
+        <button className="btn" onClick={() => onSave(v)}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+
+function CreateCard({ boardId, nextIndex, categories, onCreated }) {
+  const [categoryId, setCategoryId] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
@@ -271,6 +386,7 @@ function CreateCard({ boardId, nextIndex, onCreated }) {
         image_url: imageUrl,
         link_url: normalizedLink || null,
         order_index: nextIndex,
+        category_id: categoryId || null,
       });
 
       if (error) throw error;
@@ -283,6 +399,7 @@ function CreateCard({ boardId, nextIndex, onCreated }) {
     } catch (e) {
       alert(e.message || String(e));
     } finally {
+      setCategoryId("");
       setBusy(false);
     }
   };
@@ -293,6 +410,23 @@ function CreateCard({ boardId, nextIndex, onCreated }) {
         <input className="input" placeholder="Card title" value={title} onChange={(e) => setTitle(e.target.value)} />
         <input className="input" placeholder="Link (opens new tab)" value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)} />
       </div>
+      
+      <div className="row" style={{ marginBottom: 10 }}>
+        <select
+          className="input"
+          value={categoryId}
+          onChange={(e) => setCategoryId(e.target.value)}
+        >
+          <option value="">No category (shows in All)</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.title}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      
       <div className="row" style={{ marginBottom: 10 }}>
         <input className="input" placeholder="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
       </div>
